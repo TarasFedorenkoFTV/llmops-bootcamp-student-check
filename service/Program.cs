@@ -28,7 +28,7 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
     var model = defaultModel;  // TODO(student, W2)
 
     // промпт (W1): захардкодив — має братися з реєстру (таблиця prompts) з версією
-    var systemPrompt = "You are an assistant.";  // TODO(student, W1)
+    var systemPrompt = "You are a support assistant.";  // TODO(student, W1)
 
     // cache (W3): перед викликом глянути в Redis — раптом вже відповідали
     // TODO(student, W3)
