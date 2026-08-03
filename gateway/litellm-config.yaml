@@ -1,0 +1,41 @@
+# LiteLLM = провайдер-адаптер. Тут лише список моделей і ключі.
+# Routing, fallback, cost студент реалізує в .NET-сервісі, НЕ тут.
+
+model_list:
+  - model_name: mock
+    litellm_params:
+      model: openai/mock
+      api_base: http://mock-provider:9000/v1
+      api_key: "sk-mock"
+
+  # дві "моделі" на mock — щоб routing (W2) мав із чого обирати без реального ключа
+  - model_name: mock-mini
+    litellm_params:
+      model: openai/mock
+      api_base: http://mock-provider:9000/v1
+      api_key: "sk-mock"
+  - model_name: mock-strong
+    litellm_params:
+      model: openai/mock
+      api_base: http://mock-provider:9000/v1
+      api_key: "sk-mock"
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: azure-gpt-4o
+    litellm_params:
+      model: azure/gpt-4o
+      api_base: os.environ/AZURE_API_BASE
+      api_key: os.environ/AZURE_API_KEY
+
+litellm_settings:
+  drop_params: true
+  num_retries: 0   # збої віддаємо в сервіс (reliability — робота студента), не ретраїмо приховано
