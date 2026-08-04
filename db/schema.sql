@@ -43,6 +43,6 @@ CREATE INDEX IF NOT EXISTS idx_requests_model ON requests (model);
 -- created_at рознесений явно, бо GetActivePrompt робить ORDER BY created_at DESC:
 -- у межах одного INSERT now() однаковий для всіх рядків, і порядок був би невизначений.
 INSERT INTO prompts (name, version, body, active, created_at) VALUES
-    ('support-system', 'v1', 'You are an assistant.', true, now() - interval '2 minutes'),
-    ('support-system', 'v2', 'You are a support assistant. Be concise and helpful.', false, now() - interval '1 minute')
+    ('support-system', 'v1', 'You are an assistant.', false, now() - interval '2 minutes'),
+    ('support-system', 'v2', 'You are a support assistant. Be concise and helpful.', true, now() - interval '1 minute')
 ON CONFLICT (name, version) DO NOTHING;
