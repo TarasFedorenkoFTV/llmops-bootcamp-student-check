@@ -23,3 +23,7 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+# локальний порт-мапінг: НЕ комітити — CI-шаблон курсу очікує стандартні порти
+# (workflow чекає http://localhost:8080/health). Приклад — docker-compose.override.yml.example
+docker-compose.override.yml
