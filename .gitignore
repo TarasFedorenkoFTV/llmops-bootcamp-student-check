@@ -1,0 +1,29 @@
+# env / secrets
+.env
+*.env
+!*.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# .net
+bin/
+obj/
+
+# node / angular
+node_modules/
+dist/
+.angular/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# локальний порт-мапінг: НЕ комітити — CI-шаблон курсу очікує стандартні порти
+# (workflow чекає http://localhost:8080/health). Приклад — docker-compose.override.yml.example
+docker-compose.override.yml
