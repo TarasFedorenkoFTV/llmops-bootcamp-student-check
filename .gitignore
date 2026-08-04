@@ -1,0 +1,25 @@
+# env / secrets
+.env
+*.env
+!*.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# .net
+bin/
+obj/
+
+# node / angular
+node_modules/
+dist/
+.angular/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
