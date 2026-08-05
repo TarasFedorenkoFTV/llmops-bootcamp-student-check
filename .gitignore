@@ -1,0 +1,28 @@
+# env / secrets
+.env
+*.env
+!*.env.example
+
+# локальний зсув портів — не комітиться: CI очікує стандартні порти
+docker-compose.override.yml
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# .net
+bin/
+obj/
+
+# node / angular
+node_modules/
+dist/
+.angular/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

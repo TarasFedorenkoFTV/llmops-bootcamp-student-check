@@ -1,0 +1,9 @@
+# Зсунуті хостові порти — щоб стек піднімався паралельно з іншим
+# або на машині, де стандартні порти зайняті.
+# Запуск: docker compose -f docker-compose.yml -f demo-ports.yml up --build -d
+# ports при мержі Compose-файлів ДОДАЮТЬСЯ, тому !override.
+services:
+  ui:      { ports: !override ["4300:4200"] }
+  service: { ports: !override ["8180:8080"] }
+  gateway: { ports: !override ["4100:4000"] }
+  postgres: { ports: !override ["15432:5432"] }

@@ -40,13 +40,17 @@ jobs:
         with:
           python-version: "3.12"
 
-      # поріг 5/6 — свідомий запас на один флейк: «зламаний промпт» валить одразу
-      # 3 кейси і завжди пробиває. Кейс, що МУСИТЬ ловитися поодинці (safety),
-      # дублюй варіаціями — див. hw5.
+      # [W6] дешеві механічні перевірки ДО стека (L11 блок 07): прайс покриває
+      # моделі, схеми валідні, немає секретів — 80% поломок за секунди без контейнерів.
+      - name: Static checks
+        run: python ci/static_checks.py
+
+      # [W6] поріг 9/10 під мій датасет із hw5 (правило N≤10 -> N−1).
+      # Регресія промпта валить 4 кейси і пробиває гарантовано; запас 1 — на флейк.
       - name: Evals
         env:
           SERVICE_URL: http://localhost:8080
-        run: python evals/run.py --dataset evals/golden.jsonl --threshold 5
+        run: python evals/run.py --dataset evals/golden.jsonl --threshold 9
 
       - name: Logs on failure
         if: failure()

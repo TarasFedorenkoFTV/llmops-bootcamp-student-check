@@ -20,6 +20,21 @@ model_list:
       api_base: http://mock-provider:9000/v1
       api_key: "sk-mock"
 
+  # [W4/моє] "мертвий провайдер" для перевірки успішного fallback.
+  # Збій вшитий у сам endpoint (?fail=503), а не в текст повідомлення — тому
+  # маркер __outage кладе ЛИШЕ основну модель, а резерв лишається живим.
+  - model_name: mock-dead
+    litellm_params:
+      model: openai/mock
+      api_base: http://mock-provider:9000/v1?fail=503
+      api_key: "sk-mock"
+
+  # УВАГА (урок 3): нижче — alias'и, а не снапшоти. Провайдер оновлює модель за
+  # такою назвою без вашої участі — це «регресія без коміта» з уроку 2, тільки
+  # причина поза вашою організацією. У проді пінять конкретний снапшот, напр.
+  #     model: openai/gpt-4o-mini-2024-07-18
+  # і перехід на новий снапшот їде окремим PR через eval-гейт (урок 11).
+  # Тут alias свідомо: реальний ключ опційний, і механіку ми перевіряємо на mock.
   - model_name: gpt-4o-mini
     litellm_params:
       model: openai/gpt-4o-mini

@@ -6,6 +6,11 @@ import urllib.request
 
 BASE = os.environ.get("SERVICE_URL", "http://localhost:8080")
 
+# Windows-консоль за замовчуванням cp1252: кирилиця у відповідях моделі вбивала
+# прогін UnicodeEncodeError-ом ще до вердикту. Вивід — завжди UTF-8.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # Внутрішній сервіс — повз будь-який проксі (інакше localhost іде через корп-проксі → 404).
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
