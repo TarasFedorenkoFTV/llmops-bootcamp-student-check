@@ -29,5 +29,5 @@ CREATE INDEX IF NOT EXISTS idx_requests_model ON requests (model);
 -- відтворюється регресія; активна v2
 INSERT INTO prompts (name, version, body, active) VALUES
     ('support-system', 'v1', 'You are an assistant.', false),
-    ('support-system', 'v2', 'You are a support assistant. Be concise and helpful.', true)
+    ('support-system', 'v2', 'You are an assistant. Be concise and helpful.', true)
 ON CONFLICT (name, version) DO NOTHING;
