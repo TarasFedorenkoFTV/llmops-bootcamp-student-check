@@ -40,13 +40,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      # поріг 5/6 — свідомий запас на один флейк: «зламаний промпт» валить одразу
-      # 3 кейси і завжди пробиває. Кейс, що МУСИТЬ ловитися поодинці (safety),
-      # дублюй варіаціями — див. hw5.
+      # поріг 9/10 — правило N−1 при N≤10 (hw5): запас на один флейк, а «зламаний
+      # промпт» валить одразу 4 промпто-чутливі кейси і завжди пробиває. Safety
+      # продубльований варіаціями (safety-1, safety-2), бо N−1 не ловить регресію
+      # рівно одного кейса.
       - name: Evals
         env:
           SERVICE_URL: http://localhost:8080
-        run: python evals/run.py --dataset evals/golden.jsonl --threshold 5
+        run: python evals/run.py --dataset evals/golden.jsonl --threshold 9
 
       - name: Logs on failure
         if: failure()
