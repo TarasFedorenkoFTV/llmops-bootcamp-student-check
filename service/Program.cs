@@ -90,6 +90,12 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
         else status = res.status;
     }
 
+    // [W5] «успішна, але непридатна» (L01): беззмістовна відповідь — збій формату,
+    // а не відповідь. Не кешуємо, не показуємо як є; окремий чесний текст і статус,
+    // щоб у метриках це не змішувалось ні з успіхом, ні з падінням провайдера.
+    var unusable = ok && answer.Trim().Length < 5;
+    if (unusable) { ok = false; status = 502; }
+
     if (ok && toolCall != null)
     {
         // [W3/W4] read-only виконуємо одразу; незворотну дію — тільки через approval.
@@ -111,13 +117,19 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
         }
     }
 
+    // [W5] слід для /providers: повне падіння ланцюга рахуємо поспіль, успіх скидає.
+    // Непридатна відповідь — не падіння провайдера, лічильник не чіпає.
+    if (ok) Interlocked.Exchange(ref stats.ConsecutiveFailures, 0);
+    else if (!unusable) Interlocked.Increment(ref stats.ConsecutiveFailures);
+
     // [W4] graceful degradation: ввічливо назовні, чесний статус усередину.
     // status==0 (відповіді не було взагалі) — теж деградація, у лог їде 503.
     if (!ok)
     {
-        answer = "Вибачте, тимчасові проблеми на нашому боці. " +
-                 "Спробуйте, будь ласка, трохи згодом.";
-        status = (status == 200 || status == 0) ? 503 : status;
+        answer = unusable
+            ? "Не вдалося сформувати змістовну відповідь. Спробуйте, будь ласка, переформулювати запит."
+            : "Вибачте, тимчасові проблеми на нашому боці. Спробуйте, будь ласка, трохи згодом.";
+        if (!unusable) status = (status == 200 || status == 0) ? 503 : status;
     }
 
     // [W3/W4] у кеш — тільки успішна відповідь без tool-виклику; заглушка
@@ -141,7 +153,35 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 
 // ці ендпоінти читає готова консоль. поверни потрібну форму — картки оживуть.
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));                                    // ліфнес, не для консолі
-app.MapGet("/observability", () => Results.Json(new { todo = "aggregate from requests table" }));  // W5: { p95_ms, requests, cache_hit_pct, error_rate_pct, fallback_events }
+// [W5] агрегати консолі: requests/p95/error rate — з БД (переживають рестарт),
+// cache-hit і fallback — з лічильників у пам'яті (обнуляються з кожним ребілдом)
+app.MapGet("/observability", async () =>
+{
+    long requests = 0; double p95 = 0, errorRate = 0;
+    await using var db = new NpgsqlConnection(dbConn);
+    await db.OpenAsync();
+    await using var cmd = new NpgsqlCommand(
+        "SELECT count(*), " +
+        "COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0), " +
+        "COALESCE(AVG(CASE WHEN status <> '200' THEN 1.0 ELSE 0 END) * 100, 0) " +
+        "FROM requests WHERE created_at::date = CURRENT_DATE", db);
+    await using var rd = await cmd.ExecuteReaderAsync();
+    if (await rd.ReadAsync())
+    {
+        requests = rd.GetInt64(0);
+        p95 = rd.GetDouble(1);
+        errorRate = (double)rd.GetDecimal(2);
+    }
+    var total = stats.CacheHits + stats.CacheMisses;
+    return Results.Json(new
+    {
+        p95_ms = (int)p95,
+        requests,
+        cache_hit_pct = total == 0 ? 0 : Math.Round(stats.CacheHits * 100.0 / total, 1),
+        error_rate_pct = Math.Round(errorRate, 1),
+        fallback_events = stats.Fallbacks,
+    });
+});
 // [W2] вартість сьогодні + бюджет. Бюджет — поріг дії, а не звіт; поки константа.
 // Політика на 80% (записано, механізм — опційно): алерт-подія в лог, без деградації.
 app.MapGet("/cost", async () =>
@@ -186,7 +226,15 @@ app.MapPost("/prompts/{version}/activate", async (string version) =>
     await upd.ExecuteNonQueryAsync();
     return Results.Ok(new { active = version });
 });
-app.MapGet("/providers", () => Results.Json(new { todo = "provider health" }));                    // W5: { providers: [ { name, status } ] }
+// [W5] статус провайдерів. Core-варіант без circuit breaker: темніємо до
+// "degraded" після 3+ поспіль збоїв fallback-ланцюга (лічильник скидається успіхом)
+app.MapGet("/providers", () => Results.Json(new
+{
+    providers = new[]
+    {
+        new { name = "mock", status = stats.ConsecutiveFailures >= 3 ? "degraded" : "ok" }
+    }
+}));
 // [W4] черга HITL: незакриті заявки + виконані з результатом (спостережуваний слід)
 app.MapGet("/approvals", () => Results.Json(new
 {
@@ -340,5 +388,6 @@ class Stats
 {
     public int CacheHits;
     public int CacheMisses;
-    public int Fallbacks; // [W4] кожен перехід далі за ланцюгом
+    public int Fallbacks;           // [W4] кожен перехід далі за ланцюгом
+    public int ConsecutiveFailures; // [W5] поспіль повних падінь ланцюга — для /providers
 }
