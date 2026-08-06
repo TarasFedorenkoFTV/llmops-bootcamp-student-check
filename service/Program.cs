@@ -16,6 +16,15 @@ var dbConn = Environment.GetEnvironmentVariable("DB_CONN")
     ?? "Host=postgres;Database=llmops;Username=llmops;Password=llmops";
 var defaultModel = Environment.GetEnvironmentVariable("MODEL") ?? "mock";
 
+// [W2] прайс за 1k токенів (in, out) — навчальні числа, пропорції реальні:
+// strong ~16x дорожча за mini, вихідні ~4x дорожчі за вхідні.
+// Прайс живе поруч із Route(): ціна моделі — вхідний параметр маршрутизації.
+var prices = new Dictionary<string, (decimal In, decimal Out)>
+{
+    ["mock-mini"]   = (0.00015m, 0.0006m),
+    ["mock-strong"] = (0.0025m,  0.01m),
+};
+
 app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 {
     var requestId = Guid.NewGuid();
@@ -24,8 +33,11 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
     // guardrails (W4): тут перевірити вхід на PII / інʼєкції. поки нічого.
     // TODO(student, W4)
 
-    // routing (W2): поки одна модель, а треба обирати за задачею
-    var model = defaultModel;  // TODO(student, W2)
+    // [W2] routing: ескалація -> сильна модель, решта -> дешева.
+    // Політика: повернення, скарги і термінове йдуть на strong, бо помилка
+    // «переплатили за просте» дешевша за «зекономили на скарзі».
+    // Fallback-порядок (політика, механізм — W4): mock-strong -> mock-mini.
+    var model = Route(body.Message, defaultModel);
 
     // [W1] промпт беремо з реєстру — активну версію, а не хардкод
     var (promptVersion, systemPrompt) = await GetActivePrompt(dbConn);
@@ -83,8 +95,12 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 
     var latencyMs = (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds;
 
-    // cost (W2): порахувати tokens * ціна і покласти в cost_usd
-    decimal? costUsd = null;  // TODO(student, W2)
+    // [W2] cost: tokens * ціна моделі. Немає в прайсі — null (чесне «не знаємо»),
+    // а не нуль (брехня «було безкоштовно»).
+    decimal? costUsd = prices.TryGetValue(model, out var pr)
+        ? Math.Round(promptTokens / 1000m * pr.In
+                   + completionTokens / 1000m * pr.Out, 6)
+        : null;
 
     // лог кожного запиту — з цього живе observability (W1) і cost (W2)
     await LogRequest(dbConn, requestId, model, promptVersion, latencyMs, promptTokens, completionTokens, costUsd, status);
@@ -95,7 +111,17 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 // ці ендпоінти читає готова консоль. поверни потрібну форму — картки оживуть.
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));                                    // ліфнес, не для консолі
 app.MapGet("/observability", () => Results.Json(new { todo = "aggregate from requests table" }));  // W5: { p95_ms, requests, cache_hit_pct, error_rate_pct, fallback_events }
-app.MapGet("/cost", () => Results.Json(new { todo = "sum cost_usd for today + budget" }));         // W2/W5: { today_usd, budget_usd }
+// [W2] вартість сьогодні + бюджет. Бюджет — поріг дії, а не звіт; поки константа.
+// Політика на 80% (записано, механізм — опційно): алерт-подія в лог, без деградації.
+app.MapGet("/cost", async () =>
+{
+    await using var db = new NpgsqlConnection(dbConn);
+    await db.OpenAsync();
+    await using var cmd = new NpgsqlCommand(
+        "SELECT COALESCE(SUM(cost_usd), 0) FROM requests WHERE created_at::date = CURRENT_DATE", db);
+    var today = (decimal)(await cmd.ExecuteScalarAsync() ?? 0m);
+    return Results.Json(new { today_usd = Math.Round(today, 4), budget_usd = 5.0 });
+});
 // [W1] реєстр промптів: список версій + активація (promote і rollback — одна дія)
 app.MapGet("/prompts", async () =>
 {
@@ -133,6 +159,17 @@ app.MapGet("/providers", () => Results.Json(new { todo = "provider health" })); 
 app.MapGet("/approvals", () => Results.Json(new { todo = "pending HITL approvals" }));              // W4: { pending: [ { id, action } ] }
 
 app.Run("http://0.0.0.0:8080");
+
+// [W2] одна точка рішення про модель. З реальним ключем (MODEL != mock) роутер
+// чесно вироджується: другої реальної моделі в конфізі немає.
+static string Route(string message, string def)
+{
+    if (def != "mock") return def;
+    var u = message.ToLowerInvariant();
+    bool escalation = u.Contains("поверн") || u.Contains("терміново")
+                   || u.Contains("refund") || u.Contains("скарг");
+    return escalation ? "mock-strong" : "mock-mini";
+}
 
 // [W1] активна версія промпта з реєстру. Порожній реєстр / мертва база — дефолт
 // БЕЗ маркера "support": відповіді деградують помітно (fail-visible, не fail-pretty).
