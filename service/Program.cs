@@ -2,6 +2,7 @@
 // (яку модель брати, коли ретраїти, скільки коштує) робимо тут.
 // MODEL=mock — дефолт, грошей не треба. MODEL=gpt-4o-mini + ключ у gateway/.env — реальна модель.
 
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Npgsql;
@@ -25,6 +26,11 @@ var prices = new Dictionary<string, (decimal In, decimal Out)>
     ["mock-strong"] = (0.0025m,  0.01m),
 };
 
+// [W3] простий in-memory кеш відповідей + лічильники hit/miss.
+// Межі: тільки успішні (200) відповіді без tool-виклику. TTL нема — до рестарту.
+var cache = new ConcurrentDictionary<string, string>();
+var stats = new Stats();
+
 app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 {
     var requestId = Guid.NewGuid();
@@ -42,8 +48,18 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
     // [W1] промпт беремо з реєстру — активну версію, а не хардкод
     var (promptVersion, systemPrompt) = await GetActivePrompt(dbConn);
 
-    // cache (W3): перед викликом глянути в Redis — раптом вже відповідали
-    // TODO(student, W3)
+    // [W3] кеш: ключ = модель + ТЕКСТ промпта + повідомлення. Промпт у ключі =
+    // автоматична інвалідація при promote/rollback версії.
+    var cacheKey = $"{model}|{systemPrompt}|{body.Message}";
+    if (cache.TryGetValue(cacheKey, out var cachedAnswer))
+    {
+        Interlocked.Increment(ref stats.CacheHits);
+        var hitLatencyMs = (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds;
+        // хіт видно в лозі: рядок є, токени/гроші нульові (нуль тут чесний — виклику не було)
+        await LogRequest(dbConn, requestId, model, promptVersion, hitLatencyMs, 0, 0, 0m, 200);
+        return Results.Json(new { request_id = requestId, content = cachedAnswer, tool = (string?)null, latency_ms = hitLatencyMs });
+    }
+    Interlocked.Increment(ref stats.CacheMisses);
 
     // fallback (W4): якщо тут 429/5xx — піти на іншого провайдера. поки один виклик.
     // TODO(student, W4)
@@ -80,6 +96,13 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
             && tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() > 0)
         {
             toolCall = tools[0].GetProperty("function").GetProperty("name").GetString();
+            // [W3] виконуємо інструмент і підклеюємо результат (one-hop, чесне спрощення).
+            // Timeout: реальний інструмент — зовнішній виклик, бюджет ~3с < бюджету відповіді;
+            // вичерпання — оброблена гілка, не аварія. Ключ ідемпотентності: request_id
+            // (закриває наш ретрай; від повтору моделі/користувача — hash(conversation, tool, args)).
+            // Реалізація обох — опційна доріжка; рішення зафіксоване тут і в PR.
+            var result = RunTool(toolCall);
+            if (result != null) answer += $" ({result})";
         }
 
         var usage = doc.RootElement.GetProperty("usage");
@@ -92,6 +115,9 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
         // TODO(student, W4): тут краще graceful degradation
         answer = "Сервіс тимчасово недоступний.";
     }
+
+    // [W3] у кеш — тільки успішна відповідь без tool-виклику (межа з L05 блок 02/04)
+    if (status == 200 && toolCall == null) cache[cacheKey] = answer;
 
     var latencyMs = (int)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds;
 
@@ -160,6 +186,16 @@ app.MapGet("/approvals", () => Results.Json(new { todo = "pending HITL approvals
 
 app.Run("http://0.0.0.0:8080");
 
+// [W3] мінімальний реєстр інструментів. lookup_order — read-only; create_ticket —
+// незворотна дія, поки виконується автономно (чесна «дірка», закриється HITL на W4:
+// незворотне -> заявка в /approvals -> виконання після підтвердження людиною).
+static string? RunTool(string name) => name switch
+{
+    "lookup_order"  => "статус: оплачено, доставку призначено",
+    "create_ticket" => "тікет #T-" + Guid.NewGuid().ToString("N")[..4],
+    _ => null,
+};
+
 // [W2] одна точка рішення про модель. З реальним ключем (MODEL != mock) роутер
 // чесно вироджується: другої реальної моделі в конфізі немає.
 static string Route(string message, string def)
@@ -214,3 +250,10 @@ static async Task LogRequest(string conn, Guid id, string model, string promptVe
 }
 
 record ChatIn(string Message);
+
+// [W3] лічильники кешу; поля публічні для Interlocked
+class Stats
+{
+    public int CacheHits;
+    public int CacheMisses;
+}
