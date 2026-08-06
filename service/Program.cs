@@ -27,8 +27,8 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
     // routing (W2): поки одна модель, а треба обирати за задачею
     var model = defaultModel;  // TODO(student, W2)
 
-    // промпт (W1): захардкодив — має братися з реєстру (таблиця prompts) з версією
-    var systemPrompt = "You are a support assistant.";  // TODO(student, W1)
+    // [W1] промпт беремо з реєстру — активну версію, а не хардкод
+    var (promptVersion, systemPrompt) = await GetActivePrompt(dbConn);
 
     // cache (W3): перед викликом глянути в Redis — раптом вже відповідали
     // TODO(student, W3)
@@ -87,7 +87,7 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
     decimal? costUsd = null;  // TODO(student, W2)
 
     // лог кожного запиту — з цього живе observability (W1) і cost (W2)
-    await LogRequest(dbConn, requestId, model, latencyMs, promptTokens, completionTokens, costUsd, status);
+    await LogRequest(dbConn, requestId, model, promptVersion, latencyMs, promptTokens, completionTokens, costUsd, status);
 
     return Results.Json(new { request_id = requestId, content = answer, tool = toolCall, latency_ms = latencyMs });
 });
@@ -96,14 +96,64 @@ app.MapPost("/chat", async (ChatIn body, IHttpClientFactory httpFactory) =>
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));                                    // ліфнес, не для консолі
 app.MapGet("/observability", () => Results.Json(new { todo = "aggregate from requests table" }));  // W5: { p95_ms, requests, cache_hit_pct, error_rate_pct, fallback_events }
 app.MapGet("/cost", () => Results.Json(new { todo = "sum cost_usd for today + budget" }));         // W2/W5: { today_usd, budget_usd }
-app.MapGet("/prompts", () => Results.Json(new { todo = "list from prompts table" }));              // W1/W2: [ { name, version, active } ]
+// [W1] реєстр промптів: список версій + активація (promote і rollback — одна дія)
+app.MapGet("/prompts", async () =>
+{
+    var list = new List<object>();
+    await using var db = new NpgsqlConnection(dbConn);
+    await db.OpenAsync();
+    await using var cmd = new NpgsqlCommand(
+        "SELECT name, version, active FROM prompts ORDER BY created_at", db);
+    await using var rd = await cmd.ExecuteReaderAsync();
+    while (await rd.ReadAsync())
+        list.Add(new { name = rd.GetString(0), version = rd.GetString(1), active = rd.GetBoolean(2) });
+    return Results.Json(list);
+});
+
+app.MapPost("/prompts/{version}/activate", async (string version) =>
+{
+    await using var db = new NpgsqlConnection(dbConn);
+    await db.OpenAsync();
+
+    // невідома версія — чесний 404, інакше одруківка деактивувала б усе
+    await using var check = new NpgsqlCommand(
+        "SELECT 1 FROM prompts WHERE name = 'support-system' AND version = @v", db);
+    check.Parameters.AddWithValue("v", version);
+    if (await check.ExecuteScalarAsync() is null)
+        return Results.NotFound(new { error = $"unknown version '{version}'" });
+
+    // атомарний promote/rollback: жодного моменту з двома активними або нульома
+    await using var upd = new NpgsqlCommand(
+        "UPDATE prompts SET active = (version = @v) WHERE name = 'support-system'", db);
+    upd.Parameters.AddWithValue("v", version);
+    await upd.ExecuteNonQueryAsync();
+    return Results.Ok(new { active = version });
+});
 app.MapGet("/providers", () => Results.Json(new { todo = "provider health" }));                    // W5: { providers: [ { name, status } ] }
 app.MapGet("/approvals", () => Results.Json(new { todo = "pending HITL approvals" }));              // W4: { pending: [ { id, action } ] }
 
 app.Run("http://0.0.0.0:8080");
 
+// [W1] активна версія промпта з реєстру. Порожній реєстр / мертва база — дефолт
+// БЕЗ маркера "support": відповіді деградують помітно (fail-visible, не fail-pretty).
+static async Task<(string Version, string Body)> GetActivePrompt(string conn)
+{
+    try
+    {
+        await using var db = new NpgsqlConnection(conn);
+        await db.OpenAsync();
+        await using var cmd = new NpgsqlCommand(
+            "SELECT version, body FROM prompts WHERE active = true ORDER BY created_at DESC LIMIT 1", db);
+        await using var rd = await cmd.ExecuteReaderAsync();
+        if (await rd.ReadAsync())
+            return (rd.GetString(0), rd.GetString(1));
+    }
+    catch { /* впадемо на дефолт нижче */ }
+    return ("none", "You are an assistant.");
+}
+
 // пише один рядок у requests. якщо лог впав — запит користувача все одно віддаємо.
-static async Task LogRequest(string conn, Guid id, string model, int latency,
+static async Task LogRequest(string conn, Guid id, string model, string promptVersion, int latency,
     int promptTokens, int completionTokens, decimal? cost, int status)
 {
     try
@@ -111,10 +161,11 @@ static async Task LogRequest(string conn, Guid id, string model, int latency,
         await using var db = new NpgsqlConnection(conn);
         await db.OpenAsync();
         await using var cmd = new NpgsqlCommand(
-            "INSERT INTO requests (request_id, model, latency_ms, prompt_tokens, completion_tokens, cost_usd, status) "
-            + "VALUES (@id, @model, @lat, @pt, @ct, @cost, @status)", db);
+            "INSERT INTO requests (request_id, model, prompt_version, latency_ms, prompt_tokens, completion_tokens, cost_usd, status) "
+            + "VALUES (@id, @model, @pv, @lat, @pt, @ct, @cost, @status)", db);
         cmd.Parameters.AddWithValue("id", id);
         cmd.Parameters.AddWithValue("model", model);
+        cmd.Parameters.AddWithValue("pv", promptVersion);
         cmd.Parameters.AddWithValue("lat", latency);
         cmd.Parameters.AddWithValue("pt", promptTokens);
         cmd.Parameters.AddWithValue("ct", completionTokens);
